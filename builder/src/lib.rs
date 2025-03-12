@@ -3,6 +3,16 @@ use quote::quote;
 use syn;
 use proc_macro2;
 
+
+struct FieldWithIdent(syn::Field);
+
+impl FieldWithIdent {
+    fn extract_ident(&self) -> syn::Ident {
+        self.0.ident.to_owned().expect("Field must have an identifier")
+    }
+}
+
+
 #[proc_macro_derive(Builder)]
 pub fn derive(input: TokenStream) -> TokenStream {
     let ast = syn::parse_macro_input!(input as syn::DeriveInput);
@@ -14,54 +24,29 @@ pub fn derive(input: TokenStream) -> TokenStream {
         Span::call_site().into()
     );
 
-    let fields = match ast.data {
-        syn::Data::Struct(data) => Some(data),
-        _ => None,
-    }.expect("Expected struct input").fields;
+    let fields = if let syn::Data::Struct(data) = ast.data {
+        data.fields
+    } else { panic!("Expected struct input") };
 
-    let named_fields = match fields {
-        syn::Fields::Named(named_fields) => Some(named_fields),
-        _ => None,
-    }.expect("Expected named fields").named;
+    let named_fields: Vec<FieldWithIdent> = if let syn::Fields::Named(f) = fields {
+        f.named.into_iter().map(FieldWithIdent).collect()
+    } else { panic!("Expected named fields") };
 
-    // let field = named_fields.iter().find(|&field| {
-    //     field.ident.clone().is_some_and(|ident| ident.to_string() == "current_dir".to_string())
-    // }).expect("No field named current_dir");
+    let builder_fields = named_fields.iter().map(create_builder_fields);
 
-    let builder_fields = named_fields
-        .iter()
-        .map(
-            |field| {
-                let identifier = field.ident.clone().expect("Field must have an identifier");
-                if is_option_type(field) {
-                    quote! { #identifier }
-                } else {
-                    quote! { #identifier: Some(#identifier) }
-                }
-            }
-        );
+    let builder_field_matchings = named_fields.iter().map(create_builder_field_matching);
 
-    let assign_fields = named_fields
-        .iter()
-        .map(
-            |field| {
-                let identifier = field.ident.clone().expect("Field must have an identifier");
-                quote! { #identifier: #identifier.to_owned() }
-            }
-        );
+    let assign_fields = named_fields.iter().map(create_builder_field_assignment);
     
-    let builder_methods = named_fields
-        .iter()
-        .map(create_builder_method);
+    let builder_methods = named_fields.iter().map(create_builder_method);
 
+    let assign_field_defaults = named_fields.iter().map(create_builder_default_field_assignment);
+    
     quote! {
         use std::error::Error;
 
         pub struct #name_builder {
-            executable: Option<String>,
-            args: Option<Vec<String>>,
-            env: Option<Vec<String>>,
-            current_dir: Option<String>,
+            #(#builder_fields),*
         }
 
         impl #name_builder {
@@ -69,7 +54,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
             pub fn build(&mut self) -> Result<#name, Box<dyn Error>> {
                 if let #name_builder {
-                    #(#builder_fields),*
+                    #(#builder_field_matchings),*
                 } = self {
                     Ok(
                         #name {
@@ -85,24 +70,22 @@ pub fn derive(input: TokenStream) -> TokenStream {
         impl #name {
             pub fn builder() -> #name_builder {
                 #name_builder {
-                    executable: None,
-                    args: None,
-                    env: None,
-                    current_dir: None,
+                    #(#assign_field_defaults),*
                 }
             }
         }
     }.into()
 }
 
-fn is_option_type(field: &syn::Field) -> bool {
-    let path = if let syn::Type::Path(p) = &field.ty {
-        p
-    } else { return false; };
 
+fn is_option_type(field: &FieldWithIdent) -> bool {
+    let path = if let syn::Type::Path(p) = &field.0.ty {
+        p
+    } else { return false };
+    
     let last_segment = if let Some(ps) = path.path.segments.last() {
         ps
-    } else { return false; };
+    } else { return false };
     
     if last_segment.ident.to_string() == "Option".to_string() {
         true
@@ -111,38 +94,55 @@ fn is_option_type(field: &syn::Field) -> bool {
     }
 }
 
-fn create_builder_method(field: &syn::Field) -> proc_macro2::TokenStream {
+fn get_option_inner_type(field: &FieldWithIdent) -> Option<&syn::Type> {
+    let path = if let syn::Type::Path(p) = &field.0.ty {
+        p
+    } else { return None };
+    
+    let last_segment = path.path.segments.last()?;
+    
+    let argument = if let syn::PathArguments::AngleBracketed(a) = &last_segment.arguments {
+        a.args.first()?
+    } else { return None };
+    
+    if let syn::GenericArgument::Type(t) = argument {
+        Some(t)
+    } else { None }
+}
+
+fn create_builder_field_assignment(field: &FieldWithIdent) -> proc_macro2::TokenStream {
+    let identifier = field.extract_ident();
+    quote! { #identifier: #identifier.to_owned() }
+}
+
+fn create_builder_default_field_assignment(field: &FieldWithIdent) -> proc_macro2::TokenStream {
+    let identifier = field.extract_ident();
+    quote! { #identifier: None }
+}
+
+fn create_builder_fields(field: &FieldWithIdent) -> proc_macro2::TokenStream {
+    let identifier = field.extract_ident();
+    let field_type = field.0.ty.clone();
+    match is_option_type(field) {
+        true => quote! { #identifier: #field_type },
+        false => quote! { #identifier: Option<#field_type> },
+    }
+}
+
+fn create_builder_field_matching(field: &FieldWithIdent) -> proc_macro2::TokenStream {
+    let identifier = field.extract_ident();
+    match is_option_type(field) {
+        true => quote! { #identifier },
+        false => quote! { #identifier: Some(#identifier) },
+    }
+}
+
+fn create_builder_method(field: &FieldWithIdent) -> proc_macro2::TokenStream {
     let field_type = match is_option_type(field) {
-        false => &field.ty,
-        true => {
-            let path = if let syn::Type::Path(p) = &field.ty {
-                p
-            } else { panic!("type not a path"); };
-        
-            let last_segment = if let Some(ps) = path.path.segments.last() {
-                ps
-            } else { panic!("no last segment in path") };
-
-            let argument = if let syn::PathArguments::AngleBracketed(a) = &last_segment.arguments {
-                a.args.first().expect("Option should have one generic argument")
-            } else {
-                panic!("{}", 
-                    match &last_segment.arguments {
-                        syn::PathArguments::None => "None",
-                        syn::PathArguments::Parenthesized(_) => "parenthesized",
-                        _ => "wtf"
-                    }
-                )
-            };
-
-            if let syn::GenericArgument::Type(t) = argument {
-                t
-            } else {
-                panic!("generic argument not a type")
-            }
-        }
+        false => &field.0.ty,
+        true => get_option_inner_type(field).expect("No type found in option."),
     };
-    let field_name = field.ident.to_owned().expect("Field must have an identifier");
+    let field_name = field.extract_ident();
     quote! {
         fn #field_name(&mut self, value: #field_type) -> &mut Self {
             self.#field_name = Some(value);
