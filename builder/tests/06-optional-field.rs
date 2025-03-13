@@ -60,6 +60,7 @@ pub struct Command {
     args: Vec<String>,
     env: Vec<String>,
     current_dir: Option<String>,
+    output_file: Option<String>,
 }
 
 fn main() {

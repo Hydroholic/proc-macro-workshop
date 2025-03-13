@@ -6,6 +6,7 @@ extern crate std;
 use derive_builder::Builder;
 pub struct Command {
     executable: String,
+    #[builder(each = "arg")]
     args: Vec<String>,
     env: Vec<String>,
     current_dir: Option<String>,
@@ -32,6 +33,15 @@ impl CommandBuilder {
     }
     fn current_dir(&mut self, value: String) -> &mut Self {
         self.current_dir = Some(value);
+        self
+    }
+    fn arg(&mut self, value: String) -> &mut Self {
+        if let Some(mut v) = self.args.take() {
+            v.push(value);
+            self.args.replace(v);
+        } else {
+            self.args.replace(<[_]>::into_vec(::alloc::boxed::box_new([value])));
+        };
         self
     }
     pub fn build(&mut self) -> Result<Command, Box<dyn Error>> {
@@ -62,4 +72,40 @@ impl Command {
         }
     }
 }
-fn main() {}
+fn main() {
+    let command = Command::builder()
+        .executable("cargo".to_owned())
+        .arg("build".to_owned())
+        .arg("--release".to_owned())
+        .build()
+        .unwrap();
+    match (&command.executable, &"cargo") {
+        (left_val, right_val) => {
+            if !(*left_val == *right_val) {
+                let kind = ::core::panicking::AssertKind::Eq;
+                ::core::panicking::assert_failed(
+                    kind,
+                    &*left_val,
+                    &*right_val,
+                    ::core::option::Option::None,
+                );
+            }
+        }
+    };
+    match (
+        &command.args,
+        &<[_]>::into_vec(::alloc::boxed::box_new(["build", "--release"])),
+    ) {
+        (left_val, right_val) => {
+            if !(*left_val == *right_val) {
+                let kind = ::core::panicking::AssertKind::Eq;
+                ::core::panicking::assert_failed(
+                    kind,
+                    &*left_val,
+                    &*right_val,
+                    ::core::option::Option::None,
+                );
+            }
+        }
+    };
+}

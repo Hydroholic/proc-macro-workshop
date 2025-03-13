@@ -1,4 +1,4 @@
-use proc_macro::{TokenStream, Span};
+use proc_macro::TokenStream;
 use quote::quote;
 use syn;
 use proc_macro2;
@@ -13,7 +13,7 @@ impl FieldWithIdent {
 }
 
 
-#[proc_macro_derive(Builder)]
+#[proc_macro_derive(Builder, attributes(builder))]
 pub fn derive(input: TokenStream) -> TokenStream {
     let ast = syn::parse_macro_input!(input as syn::DeriveInput);
 
@@ -21,7 +21,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let name_builder_str = format!("{}Builder", name);
     let name_builder = syn::Ident::new(
         &name_builder_str,
-        Span::call_site().into()
+        name.span()
     );
 
     let fields = if let syn::Data::Struct(data) = ast.data {
@@ -32,13 +32,39 @@ pub fn derive(input: TokenStream) -> TokenStream {
         f.named.into_iter().map(FieldWithIdent).collect()
     } else { panic!("Expected named fields") };
 
+
+    let repetitive_builder_names = named_fields
+        .iter()
+        .map(|f| {
+            f.0.attrs.iter()
+                .filter(|&attr| attr.path().is_ident("builder"))
+                .map(get_repetitive_builder_name)
+        });
+
+    let builder_methods_repeated_element = named_fields
+        .iter()
+        .map(|f| {
+            f.0.attrs.iter()
+                .filter(|&attr| attr.path().is_ident("builder"))
+                .map(get_repetitive_builder_name)
+                .map(|s| create_builder_method_repeated_element(f, s))
+        }).flatten();
+
     let builder_fields = named_fields.iter().map(create_builder_fields);
 
     let builder_field_matchings = named_fields.iter().map(create_builder_field_matching);
 
     let assign_fields = named_fields.iter().map(create_builder_field_assignment);
     
-    let builder_methods = named_fields.iter().map(create_builder_method);
+    let builder_methods = named_fields.iter()
+        .filter(|&f| {
+            repetitive_builder_names
+                .clone()
+                .flatten()
+                .map(|literal| literal.value())
+                .any(|s| s == f.extract_ident().to_string()) // FIXME
+        })
+        .map(create_builder_method);
 
     let assign_field_defaults = named_fields.iter().map(create_builder_default_field_assignment);
     
@@ -51,6 +77,8 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
         impl #name_builder {
             #(#builder_methods)*
+
+            #(#builder_methods_repeated_element)*
 
             pub fn build(&mut self) -> Result<#name, Box<dyn Error>> {
                 if let #name_builder {
@@ -77,37 +105,60 @@ pub fn derive(input: TokenStream) -> TokenStream {
     }.into()
 }
 
-
-fn is_option_type(field: &FieldWithIdent) -> bool {
-    let path = if let syn::Type::Path(p) = &field.0.ty {
-        p
-    } else { return false };
-    
-    let last_segment = if let Some(ps) = path.path.segments.last() {
-        ps
-    } else { return false };
-    
-    if last_segment.ident.to_string() == "Option".to_string() {
-        true
-    } else {
-        false
-    }
+fn parse_args(attr: &syn::Attribute) -> Result<syn::Expr, syn::Error> {
+    attr.parse_args()
 }
 
-fn get_option_inner_type(field: &FieldWithIdent) -> Option<&syn::Type> {
+fn get_repetitive_builder_name(attr: &syn::Attribute) -> syn::LitStr {
+    let expr = parse_args(attr).expect("Can't parse the attribute's argument");
+
+    let expr_assign = if let syn::Expr::Assign(e) = expr {
+        e
+    } else { panic!("The expression is not be an assignment") };
+
+    if let syn::Expr::Path(expr_path) = *expr_assign.left {
+        if !expr_path.path.is_ident("each") {
+            panic!("The left part of the expression is not 'each'") 
+        };
+    } else { panic!("The left part of the expression is not a path") };
+
+    if let syn::Expr::Lit(lit_expr) = *expr_assign.right {
+        if let syn::Lit::Str(lit_str) = lit_expr.lit {
+            lit_str
+        } else { panic!("The right part of the expression is not a string") }
+    } else { panic!("The right part of the expression is not a literal") }
+}
+
+fn get_path_field_type(field: &FieldWithIdent) -> &syn::Ident {
     let path = if let syn::Type::Path(p) = &field.0.ty {
         p
-    } else { return None };
+    } else { panic!("Field must be a path.") };
+
+    &path.path.segments.last().expect("Path must have a last segment.").ident
+}
+
+fn is_option_type(field: &FieldWithIdent) -> bool {
+    get_path_field_type(field).to_string() == "Option".to_string()
+}
+
+fn is_vec_type(field: &FieldWithIdent) -> bool {
+    get_path_field_type(field).to_string() == "Vec".to_string()
+}
+
+fn get_generic_type_argument(field: &FieldWithIdent) -> &syn::Type {
+    let path = if let syn::Type::Path(p) = &field.0.ty {
+        p
+    } else { panic!("Field type is not a path") };
     
-    let last_segment = path.path.segments.last()?;
+    let last_segment = path.path.segments.last().expect("Path must have a last segment.");
     
     let argument = if let syn::PathArguments::AngleBracketed(a) = &last_segment.arguments {
-        a.args.first()?
-    } else { return None };
+        a.args.first().expect("No generic parameter inside the brackets")
+    } else { panic!("No generic parameter") };
     
     if let syn::GenericArgument::Type(t) = argument {
-        Some(t)
-    } else { None }
+        t
+    } else { panic!("Generic parameter is not a type") }
 }
 
 fn create_builder_field_assignment(field: &FieldWithIdent) -> proc_macro2::TokenStream {
@@ -140,12 +191,32 @@ fn create_builder_field_matching(field: &FieldWithIdent) -> proc_macro2::TokenSt
 fn create_builder_method(field: &FieldWithIdent) -> proc_macro2::TokenStream {
     let field_type = match is_option_type(field) {
         false => &field.0.ty,
-        true => get_option_inner_type(field).expect("No type found in option."),
+        true => get_generic_type_argument(field),
     };
     let field_name = field.extract_ident();
     quote! {
         fn #field_name(&mut self, value: #field_type) -> &mut Self {
             self.#field_name = Some(value);
+            self
+        }
+    }
+}
+
+fn create_builder_method_repeated_element(field: &FieldWithIdent, name: syn::LitStr) -> proc_macro2::TokenStream {
+    let field_type = match is_vec_type(field) {
+        false => panic!("Field must be of Vec type."),
+        true => get_generic_type_argument(field),
+    };
+    let field_name = field.extract_ident();
+    let func_name = syn::Ident::new(&name.value(), name.span());
+    quote! {
+        fn #func_name(&mut self, value: #field_type) -> &mut Self {
+            if let Some(mut v) = self.#field_name.take() {
+                v.push(value);
+                self.#field_name.replace(v);
+            } else {
+                self.#field_name.replace(vec![value]);
+            };
             self
         }
     }
