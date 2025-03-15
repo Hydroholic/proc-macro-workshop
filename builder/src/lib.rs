@@ -58,11 +58,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
     
     let builder_methods = named_fields.iter()
         .filter(|&f| {
-            repetitive_builder_names
-                .clone()
-                .flatten()
-                .map(|literal| literal.value())
-                .any(|s| s == f.extract_ident().to_string()) // FIXME
+            find_field_name_in_iterator(repetitive_builder_names.clone().flatten(), f)
         })
         .map(create_builder_method);
 
@@ -103,6 +99,15 @@ pub fn derive(input: TokenStream) -> TokenStream {
             }
         }
     }.into()
+}
+
+fn find_field_name_in_iterator(
+    repetitive_builder_names: impl std::iter::Iterator<Item = syn::LitStr>,
+    f: &FieldWithIdent
+) -> bool {
+    repetitive_builder_names
+        .map(|literal| literal.value())
+        .all(|s| s != f.extract_ident().to_string())
 }
 
 fn parse_args(attr: &syn::Attribute) -> Result<syn::Expr, syn::Error> {
@@ -167,14 +172,17 @@ fn create_builder_field_assignment(field: &FieldWithIdent) -> proc_macro2::Token
 }
 
 fn create_builder_default_field_assignment(field: &FieldWithIdent) -> proc_macro2::TokenStream {
-    let identifier = field.extract_ident();
-    quote! { #identifier: None }
+    let field_name = field.extract_ident();
+    match is_vec_type(field) {
+        false => quote! { #field_name: None },
+        true => quote! { #field_name: Vec::new() },
+    }
 }
 
 fn create_builder_fields(field: &FieldWithIdent) -> proc_macro2::TokenStream {
     let identifier = field.extract_ident();
     let field_type = field.0.ty.clone();
-    match is_option_type(field) {
+    match is_option_type(field) || is_vec_type(field) {
         true => quote! { #identifier: #field_type },
         false => quote! { #identifier: Option<#field_type> },
     }
@@ -182,21 +190,28 @@ fn create_builder_fields(field: &FieldWithIdent) -> proc_macro2::TokenStream {
 
 fn create_builder_field_matching(field: &FieldWithIdent) -> proc_macro2::TokenStream {
     let identifier = field.extract_ident();
-    match is_option_type(field) {
+    match is_option_type(field) || is_vec_type(field)  {
         true => quote! { #identifier },
         false => quote! { #identifier: Some(#identifier) },
     }
 }
 
 fn create_builder_method(field: &FieldWithIdent) -> proc_macro2::TokenStream {
-    let field_type = match is_option_type(field) {
+    let is_type_with_generic = is_option_type(field);
+    let field_type = match is_type_with_generic {
         false => &field.0.ty,
         true => get_generic_type_argument(field),
     };
+    let field_value = if is_vec_type(field) {
+        quote! { value }
+    } else {
+        quote! { Some(value) }
+    };
+
     let field_name = field.extract_ident();
     quote! {
         fn #field_name(&mut self, value: #field_type) -> &mut Self {
-            self.#field_name = Some(value);
+            self.#field_name = #field_value;
             self
         }
     }
@@ -211,13 +226,11 @@ fn create_builder_method_repeated_element(field: &FieldWithIdent, name: syn::Lit
     let func_name = syn::Ident::new(&name.value(), name.span());
     quote! {
         fn #func_name(&mut self, value: #field_type) -> &mut Self {
-            if let Some(mut v) = self.#field_name.take() {
-                v.push(value);
-                self.#field_name.replace(v);
-            } else {
-                self.#field_name.replace(vec![value]);
-            };
+            self.#field_name.push(value);
             self
         }
     }
 }
+
+// TODO: Group building block by field to avoid decoupled logic on field type
+// BUT: Can't because pieces of code like attributes of a struct must be pieced together
