@@ -1,15 +1,36 @@
 use proc_macro::TokenStream;
-use quote::quote;
-use syn;
+use quote::{quote, quote_spanned};
+use syn::{self, spanned::Spanned};
 use proc_macro2;
 
 
+struct CompileError<'a> {
+    message: &'a str,
+    span: Option<proc_macro2::Span>,
+}
+
+impl<'a> CompileError<'a> {
+    fn to_token(&self) -> proc_macro2::TokenStream {
+        let message = self.message;
+        if let Some(span) = self.span {
+            quote_spanned! { span => compile_error!(#message) }
+        } else { quote! { compile_error!(#message) } }
+    }
+}
+
+#[derive(Clone)]
 struct FieldWithIdent(syn::Field);
 
 impl FieldWithIdent {
     fn extract_ident(&self) -> syn::Ident {
         self.0.ident.to_owned().expect("Field must have an identifier")
     }
+}
+
+
+struct FieldWithRepeatableBuilderName {
+    field: FieldWithIdent,
+    name: syn::LitStr,
 }
 
 
@@ -26,29 +47,35 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
     let fields = if let syn::Data::Struct(data) = ast.data {
         data.fields
-    } else { panic!("Expected struct input") };
+    } else { 
+        return quote! { compile_error!("Expected struct input") }.into()
+    };
 
     let named_fields: Vec<FieldWithIdent> = if let syn::Fields::Named(f) = fields {
         f.named.into_iter().map(FieldWithIdent).collect()
-    } else { panic!("Expected named fields") };
-
-
-    let repetitive_builder_names = named_fields
+    } else { 
+        return quote! { compile_error!("Expected named fields") }.into()
+    };
+    
+    let res_repeatable_builders = named_fields
         .iter()
         .map(|f| {
             f.0.attrs.iter()
                 .filter(|&attr| attr.path().is_ident("builder"))
                 .map(get_repetitive_builder_name)
-        });
+                .map(|res| res.map(|res_ok| FieldWithRepeatableBuilderName {field: f.to_owned(), name: res_ok}))
+        })
+        .flatten()
+        .collect::<Result<Vec<FieldWithRepeatableBuilderName>, CompileError>>();
 
-    let builder_methods_repeated_element = named_fields
+    let repeatable_builders = match res_repeatable_builders {
+        Ok(v) => v,
+        Err(e) => return e.to_token().into(),
+    };
+
+    let builder_methods_repeated_element = repeatable_builders
         .iter()
-        .map(|f| {
-            f.0.attrs.iter()
-                .filter(|&attr| attr.path().is_ident("builder"))
-                .map(get_repetitive_builder_name)
-                .map(|s| create_builder_method_repeated_element(f, s))
-        }).flatten();
+        .map(|s| create_builder_method_repeated_element(&s.field, s.name.to_owned()));
 
     let builder_fields = named_fields.iter().map(create_builder_fields);
 
@@ -58,7 +85,9 @@ pub fn derive(input: TokenStream) -> TokenStream {
     
     let builder_methods = named_fields.iter()
         .filter(|&f| {
-            find_field_name_in_iterator(repetitive_builder_names.clone().flatten(), f)
+            find_field_name_in_iterator(
+                repeatable_builders.iter()
+                    .map(|f| f.name.to_owned()), f)
         })
         .map(create_builder_method);
 
@@ -114,24 +143,48 @@ fn parse_args(attr: &syn::Attribute) -> Result<syn::Expr, syn::Error> {
     attr.parse_args()
 }
 
-fn get_repetitive_builder_name(attr: &syn::Attribute) -> syn::LitStr {
-    let expr = parse_args(attr).expect("Can't parse the attribute's argument");
+fn get_repetitive_builder_name(attr: &syn::Attribute) -> Result<syn::LitStr, CompileError> {
+    let expr = parse_args(attr)
+        .or(Err(CompileError {
+            message: "Can't parse the attribute's argument",
+            span: Some(attr.span()),
+        }))?;
 
     let expr_assign = if let syn::Expr::Assign(e) = expr {
         e
-    } else { panic!("The expression is not be an assignment") };
+    } else {
+        return Err(CompileError {
+            message: "The expression is not be an assignment",
+            span: Some(expr.span()),
+        })
+    };
 
     if let syn::Expr::Path(expr_path) = *expr_assign.left {
         if !expr_path.path.is_ident("each") {
-            panic!("The left part of the expression is not 'each'") 
+            return Err(CompileError {
+                message: "The left part of the expression is not 'each'",
+                span: Some(expr_path.path.span()),
+            })
         };
-    } else { panic!("The left part of the expression is not a path") };
+    } else {
+        return Err(CompileError{ message: "The left part of the expression is not a path", span: Some(expr_assign.left.span()) })
+    };
 
     if let syn::Expr::Lit(lit_expr) = *expr_assign.right {
         if let syn::Lit::Str(lit_str) = lit_expr.lit {
-            lit_str
-        } else { panic!("The right part of the expression is not a string") }
-    } else { panic!("The right part of the expression is not a literal") }
+            Ok(lit_str)
+        } else {
+            return Err(CompileError {
+                message: "The right part of the expression is not a string",
+                span: Some(lit_expr.lit.span()),
+            })
+        }
+    } else {
+        return Err(CompileError {
+            message: "The right part of the expression is not a literal",
+            span: Some(expr_assign.right.span()),
+        })
+    }
 }
 
 fn get_path_field_type(field: &FieldWithIdent) -> &syn::Ident {
@@ -218,9 +271,12 @@ fn create_builder_method(field: &FieldWithIdent) -> proc_macro2::TokenStream {
 }
 
 fn create_builder_method_repeated_element(field: &FieldWithIdent, name: syn::LitStr) -> proc_macro2::TokenStream {
-    let field_type = match is_vec_type(field) {
-        false => panic!("Field must be of Vec type."),
-        true => get_generic_type_argument(field),
+    let field_type = if is_vec_type(field) {
+        get_generic_type_argument(field) 
+    } else {
+        return quote_spanned!{
+            field.0.ty.span() => compile_error!("Field must be of Vec type.")
+        }
     };
     let field_name = field.extract_ident();
     let func_name = syn::Ident::new(&name.value(), name.span());
@@ -231,6 +287,3 @@ fn create_builder_method_repeated_element(field: &FieldWithIdent, name: syn::Lit
         }
     }
 }
-
-// TODO: Group building block by field to avoid decoupled logic on field type
-// BUT: Can't because pieces of code like attributes of a struct must be pieced together
