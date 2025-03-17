@@ -6,15 +6,13 @@ use proc_macro2;
 
 struct CompileError<'a> {
     message: &'a str,
-    span: Option<proc_macro2::Span>,
+    span: proc_macro2::Span,
 }
 
 impl<'a> CompileError<'a> {
     fn to_token(&self) -> proc_macro2::TokenStream {
         let message = self.message;
-        if let Some(span) = self.span {
-            quote_spanned! { span => compile_error!(#message) }
-        } else { quote! { compile_error!(#message) } }
+        quote_spanned! { self.span => compile_error!(#message) }
     }
 }
 
@@ -145,30 +143,35 @@ fn parse_args(attr: &syn::Attribute) -> Result<syn::Expr, syn::Error> {
 
 fn get_repetitive_builder_name(attr: &syn::Attribute) -> Result<syn::LitStr, CompileError> {
     let expr = parse_args(attr)
-        .or(Err(CompileError {
-            message: "Can't parse the attribute's argument",
-            span: Some(attr.span()),
+        .or(
+            Err(
+                CompileError {
+                    message: "Can't parse the attribute's argument",
+                    span: attr.span(),
         }))?;
 
     let expr_assign = if let syn::Expr::Assign(e) = expr {
         e
     } else {
-        return Err(CompileError {
-            message: "The expression is not be an assignment",
-            span: Some(expr.span()),
-        })
-    };
+        return Err(
+            CompileError {
+                message: "The expression is not be an assignment",
+                span: expr.span(),
+    })};
 
     if let syn::Expr::Path(expr_path) = *expr_assign.left {
         if !expr_path.path.is_ident("each") {
-            return Err(CompileError {
-                message: "The left part of the expression is not 'each'",
-                span: Some(expr_path.path.span()),
-            })
-        };
+            return Err(
+                CompileError {
+                    message: "The left part of the expression is not 'each'",
+                    span: expr_path.path.span(),
+        })};
     } else {
-        return Err(CompileError{ message: "The left part of the expression is not a path", span: Some(expr_assign.left.span()) })
-    };
+        return Err(
+            CompileError{
+                message: "The left part of the expression is not a path",
+                span: expr_assign.left.span()
+    })};
 
     if let syn::Expr::Lit(lit_expr) = *expr_assign.right {
         if let syn::Lit::Str(lit_str) = lit_expr.lit {
@@ -176,47 +179,82 @@ fn get_repetitive_builder_name(attr: &syn::Attribute) -> Result<syn::LitStr, Com
         } else {
             return Err(CompileError {
                 message: "The right part of the expression is not a string",
-                span: Some(lit_expr.lit.span()),
-            })
-        }
+                span: lit_expr.lit.span(),
+        })}
     } else {
-        return Err(CompileError {
-            message: "The right part of the expression is not a literal",
-            span: Some(expr_assign.right.span()),
-        })
-    }
+        return Err(
+            CompileError {
+                message: "The right part of the expression is not a literal",
+                span: expr_assign.right.span(),
+    })}
 }
 
-fn get_path_field_type(field: &FieldWithIdent) -> &syn::Ident {
+fn get_path_field_type(field: &FieldWithIdent) -> Result<&syn::Ident, CompileError> {
     let path = if let syn::Type::Path(p) = &field.0.ty {
         p
-    } else { panic!("Field must be a path.") };
+    } else { 
+        return Err(
+            CompileError {
+                message: "Field must be a path.",
+                span: field.0.ty.span(),
+    })};
 
-    &path.path.segments.last().expect("Path must have a last segment.").ident
+    let last = path.path.segments.last();
+
+    Ok(
+        &last.ok_or(
+            CompileError {
+                message: "Path must have a last segment.",
+                span: last.span(),
+        })?.ident
+    )
 }
 
-fn is_option_type(field: &FieldWithIdent) -> bool {
-    get_path_field_type(field).to_string() == "Option".to_string()
+fn is_option_type(field: &FieldWithIdent) -> Result<bool, CompileError> {
+    Ok(get_path_field_type(field)?.to_string() == "Option".to_string())
 }
 
-fn is_vec_type(field: &FieldWithIdent) -> bool {
-    get_path_field_type(field).to_string() == "Vec".to_string()
+fn is_vec_type(field: &FieldWithIdent) -> Result<bool, CompileError> {
+    Ok(get_path_field_type(field)?.to_string() == "Vec".to_string())
 }
 
-fn get_generic_type_argument(field: &FieldWithIdent) -> &syn::Type {
+fn get_generic_type_argument(field: &FieldWithIdent) -> Result<&syn::Type, CompileError> {
     let path = if let syn::Type::Path(p) = &field.0.ty {
         p
-    } else { panic!("Field type is not a path") };
+    } else {
+        return Err(
+            CompileError {
+                message: "Field type is not a path",
+                span: field.0.span(),
+    })};
     
-    let last_segment = path.path.segments.last().expect("Path must have a last segment.");
+    let last = path.path.segments.last();
+    let last_segment = last.ok_or(
+        CompileError {
+            message: "Path must have a last segment.",
+            span: last.span(),
+    })?;
     
     let argument = if let syn::PathArguments::AngleBracketed(a) = &last_segment.arguments {
-        a.args.first().expect("No generic parameter inside the brackets")
-    } else { panic!("No generic parameter") };
+        a.args.first().ok_or(
+            CompileError {
+                message: "No generic parameter inside the brackets",
+                span: a.args.first().span(),
+    })?} else {
+        return Err(
+            CompileError {
+                message: "No generic parameter",
+                span: last_segment.arguments.span(),
+    })};
     
     if let syn::GenericArgument::Type(t) = argument {
-        t
-    } else { panic!("Generic parameter is not a type") }
+        Ok(t)
+    } else {
+        Err(
+            CompileError {
+                message: "Generic parameter is not a type",
+                span: argument.span()
+    })}
 }
 
 fn create_builder_field_assignment(field: &FieldWithIdent) -> proc_macro2::TokenStream {
@@ -227,15 +265,24 @@ fn create_builder_field_assignment(field: &FieldWithIdent) -> proc_macro2::Token
 fn create_builder_default_field_assignment(field: &FieldWithIdent) -> proc_macro2::TokenStream {
     let field_name = field.extract_ident();
     match is_vec_type(field) {
-        false => quote! { #field_name: None },
-        true => quote! { #field_name: Vec::new() },
+        Ok(false) => quote! { #field_name: None },
+        Ok(true) => quote! { #field_name: Vec::new() },
+        Err(err) => err.to_token()
     }
 }
 
 fn create_builder_fields(field: &FieldWithIdent) -> proc_macro2::TokenStream {
     let identifier = field.extract_ident();
     let field_type = field.0.ty.clone();
-    match is_option_type(field) || is_vec_type(field) {
+    let is_option_type = match is_option_type(field) {
+        Ok(val) => val,
+        Err(err) => return err.to_token()
+    };
+    let is_vec_type = match is_vec_type(field) {
+        Ok(val) => val,
+        Err(err) => return err.to_token()
+    };
+    match is_option_type || is_vec_type {
         true => quote! { #identifier: #field_type },
         false => quote! { #identifier: Option<#field_type> },
     }
@@ -243,7 +290,15 @@ fn create_builder_fields(field: &FieldWithIdent) -> proc_macro2::TokenStream {
 
 fn create_builder_field_matching(field: &FieldWithIdent) -> proc_macro2::TokenStream {
     let identifier = field.extract_ident();
-    match is_option_type(field) || is_vec_type(field)  {
+    let is_option_type = match is_option_type(field) {
+        Ok(val) => val,
+        Err(err) => return err.to_token()
+    };
+    let is_vec_type = match is_vec_type(field) {
+        Ok(val) => val,
+        Err(err) => return err.to_token()
+    };
+    match is_option_type || is_vec_type  {
         true => quote! { #identifier },
         false => quote! { #identifier: Some(#identifier) },
     }
@@ -252,10 +307,18 @@ fn create_builder_field_matching(field: &FieldWithIdent) -> proc_macro2::TokenSt
 fn create_builder_method(field: &FieldWithIdent) -> proc_macro2::TokenStream {
     let is_type_with_generic = is_option_type(field);
     let field_type = match is_type_with_generic {
-        false => &field.0.ty,
-        true => get_generic_type_argument(field),
+        Ok(false) => &field.0.ty,
+        Ok(true) => match get_generic_type_argument(field) {
+            Ok(generic) => generic,
+            Err(err) => return err.to_token(),
+        },
+        Err(err) => return err.to_token(),
     };
-    let field_value = if is_vec_type(field) {
+    let is_vec_type = match is_vec_type(field) {
+        Ok(val) => val,
+        Err(err) => return err.to_token()
+    };
+    let field_value = if is_vec_type {
         quote! { value }
     } else {
         quote! { Some(value) }
@@ -271,12 +334,20 @@ fn create_builder_method(field: &FieldWithIdent) -> proc_macro2::TokenStream {
 }
 
 fn create_builder_method_repeated_element(field: &FieldWithIdent, name: syn::LitStr) -> proc_macro2::TokenStream {
-    let field_type = if is_vec_type(field) {
-        get_generic_type_argument(field) 
-    } else {
-        return quote_spanned!{
-            field.0.ty.span() => compile_error!("Field must be of Vec type.")
+    let is_vec_type = match is_vec_type(field) {
+        Ok(val) => val,
+        Err(err) => return err.to_token()
+    };
+    let field_type = if is_vec_type {
+        match get_generic_type_argument(field) {
+            Ok(value) => value,
+            Err(err) => return err.to_token(),
         }
+    } else {
+        return CompileError {
+            span: field.0.ty.span(),
+            message: "Field must be of Vec type.",
+        }.to_token()
     };
     let field_name = field.extract_ident();
     let func_name = syn::Ident::new(&name.value(), name.span());
