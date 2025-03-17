@@ -103,17 +103,19 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
             #(#builder_methods_repeated_element)*
 
-            pub fn build(&mut self) -> Result<#name, Box<dyn Error>> {
+            pub fn build(&mut self) -> std::result::Result<#name, std::boxed::Box<dyn Error>> {
                 if let #name_builder {
                     #(#builder_field_matchings),*
                 } = self {
-                    Ok(
+                    std::result::Result::Ok(
                         #name {
                             #(#assign_fields),*
                         }
                     )
                 } else {
-                    Err(Box::from("Could not build because of missing attributes."))
+                    std::result::Result::Err(
+                        std::boxed::Box::from(
+                            "Could not build because of missing attributes."))
                 }
             }
         }
@@ -189,46 +191,41 @@ fn get_repetitive_builder_name(attr: &syn::Attribute) -> Result<syn::LitStr, Com
     })}
 }
 
-fn get_path_field_type(field: &FieldWithIdent) -> Result<&syn::Ident, CompileError> {
-    let path = if let syn::Type::Path(p) = &field.0.ty {
-        p
+fn get_field_type_path(field: &FieldWithIdent) -> Result<&syn::Path, CompileError> {
+    if let syn::Type::Path(p) = &field.0.ty {
+        Ok(&p.path)
     } else { 
         return Err(
             CompileError {
                 message: "Field must be a path.",
                 span: field.0.ty.span(),
-    })};
+    })}
+}
 
-    let last = path.path.segments.last();
-
-    Ok(
-        &last.ok_or(
-            CompileError {
-                message: "Path must have a last segment.",
-                span: last.span(),
-        })?.ident
-    )
+fn path_to_string(path: &syn::Path) -> String {
+    path.segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect::<Vec<_>>()
+        .join("::")
 }
 
 fn is_option_type(field: &FieldWithIdent) -> Result<bool, CompileError> {
-    Ok(get_path_field_type(field)?.to_string() == "Option".to_string())
+    let path = get_field_type_path(field)?;
+    let path_str = path_to_string(path);
+    Ok(path_str == "Option")
 }
 
 fn is_vec_type(field: &FieldWithIdent) -> Result<bool, CompileError> {
-    Ok(get_path_field_type(field)?.to_string() == "Vec".to_string())
+    let path = get_field_type_path(field)?;
+    let path_str = path_to_string(path);
+    Ok(path_str == "Vec")
 }
 
 fn get_generic_type_argument(field: &FieldWithIdent) -> Result<&syn::Type, CompileError> {
-    let path = if let syn::Type::Path(p) = &field.0.ty {
-        p
-    } else {
-        return Err(
-            CompileError {
-                message: "Field type is not a path",
-                span: field.0.span(),
-    })};
+    let path = get_field_type_path(field)?;
     
-    let last = path.path.segments.last();
+    let last = path.segments.last();
     let last_segment = last.ok_or(
         CompileError {
             message: "Path must have a last segment.",
@@ -265,8 +262,8 @@ fn create_builder_field_assignment(field: &FieldWithIdent) -> proc_macro2::Token
 fn create_builder_default_field_assignment(field: &FieldWithIdent) -> proc_macro2::TokenStream {
     let field_name = field.extract_ident();
     match is_vec_type(field) {
-        Ok(false) => quote! { #field_name: None },
-        Ok(true) => quote! { #field_name: Vec::new() },
+        Ok(false) => quote! { #field_name: std::option::Option::None },
+        Ok(true) => quote! { #field_name: std::vec::Vec::new() },
         Err(err) => err.to_token()
     }
 }
@@ -284,7 +281,7 @@ fn create_builder_fields(field: &FieldWithIdent) -> proc_macro2::TokenStream {
     };
     match is_option_type || is_vec_type {
         true => quote! { #identifier: #field_type },
-        false => quote! { #identifier: Option<#field_type> },
+        false => quote! { #identifier: std::option::Option<#field_type> },
     }
 }
 
@@ -300,7 +297,7 @@ fn create_builder_field_matching(field: &FieldWithIdent) -> proc_macro2::TokenSt
     };
     match is_option_type || is_vec_type  {
         true => quote! { #identifier },
-        false => quote! { #identifier: Some(#identifier) },
+        false => quote! { #identifier: std::option::Option::Some(#identifier) },
     }
 }
 
@@ -321,7 +318,7 @@ fn create_builder_method(field: &FieldWithIdent) -> proc_macro2::TokenStream {
     let field_value = if is_vec_type {
         quote! { value }
     } else {
-        quote! { Some(value) }
+        quote! { std::option::Option::Some(value) }
     };
 
     let field_name = field.extract_ident();

@@ -13,6 +13,12 @@ pub struct Command {
     current_dir: Option<String>,
 }
 use std::error::Error;
+fn test() {
+    let a = "String";
+    let a = "Vec";
+    let a = "Vec";
+    let a = "Option";
+}
 pub struct CommandBuilder {
     executable: Option<String>,
     args: Vec<String>,
@@ -21,7 +27,7 @@ pub struct CommandBuilder {
 }
 impl CommandBuilder {
     fn executable(&mut self, value: String) -> &mut Self {
-        self.executable = Some(value);
+        self.executable = std::option::Option::Some(value);
         self
     }
     fn args(&mut self, value: Vec<String>) -> &mut Self {
@@ -29,7 +35,7 @@ impl CommandBuilder {
         self
     }
     fn current_dir(&mut self, value: String) -> &mut Self {
-        self.current_dir = Some(value);
+        self.current_dir = std::option::Option::Some(value);
         self
     }
     fn arg(&mut self, value: String) -> &mut Self {
@@ -40,26 +46,33 @@ impl CommandBuilder {
         self.env.push(value);
         self
     }
-    pub fn build(&mut self) -> Result<Command, Box<dyn Error>> {
-        if let CommandBuilder { executable: Some(executable), args, env, current_dir } = self {
-            Ok(Command {
+    pub fn build(&mut self) -> std::result::Result<Command, std::boxed::Box<dyn Error>> {
+        if let CommandBuilder {
+            executable: std::option::Option::Some(executable),
+            args,
+            env,
+            current_dir,
+        } = self {
+            std::result::Result::Ok(Command {
                 executable: executable.to_owned(),
                 args: args.to_owned(),
                 env: env.to_owned(),
                 current_dir: current_dir.to_owned(),
             })
         } else {
-            Err(Box::from("Could not build because of missing attributes."))
+            std::result::Result::Err(
+                std::boxed::Box::from("Could not build because of missing attributes."),
+            )
         }
     }
 }
 impl Command {
     pub fn builder() -> CommandBuilder {
         CommandBuilder {
-            executable: None,
-            args: Vec::new(),
-            env: Vec::new(),
-            current_dir: None,
+            executable: std::option::Option::None,
+            args: std::vec::Vec::new(),
+            env: std::vec::Vec::new(),
+            current_dir: std::option::Option::None,
         }
     }
 }
