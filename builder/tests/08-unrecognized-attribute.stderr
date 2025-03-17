@@ -1,5 +1,27 @@
-error: expected `builder(each = "...")`
-  --> tests/08-unrecognized-attribute.rs:22:7
+error: macros that expand to items must be delimited with braces or followed by a semicolon
+  --> tests/08-unrecognized-attribute.rs:22:15
    |
 22 |     #[builder(eac = "arg")]
-   |       ^^^^^^^^^^^^^^^^^^^^
+   |               ^^^
+   |
+help: change the delimiters to curly braces
+   |
+22 -     #[builder(eac = "arg")]
+22 +     #[builder({} = "arg")]
+   |
+help: add a semicolon
+   |
+22 |     #[builder(eac; = "arg")]
+   |                  +
+
+error: proc-macro derive produced unparsable tokens
+  --> tests/08-unrecognized-attribute.rs:19:10
+   |
+19 | #[derive(Builder)]
+   |          ^^^^^^^
+
+error: The left part of the expression is not 'each'
+  --> tests/08-unrecognized-attribute.rs:22:15
+   |
+22 |     #[builder(eac = "arg")]
+   |               ^^^
