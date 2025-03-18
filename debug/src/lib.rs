@@ -51,50 +51,35 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
 
 fn extract_format_string(attr: &syn::Attribute) -> Result<syn::LitStr, CompileError> {
-    let expr: syn::Expr = attr.parse_args()
-        .or(
-            Err(
-                CompileError {
-                    message: "Can't parse the attribute's argument",
-                    span: attr.span(),
-        }))?;
-
-    let expr_assign = if let syn::Expr::Assign(e) = expr {
-        e
+    let meta = if let syn::Meta::NameValue(m) = &attr.meta {
+        m
     } else {
         return Err(
             CompileError {
-                message: "The expression is not an assignment",
-                span: expr.span(),
+                message: "Can't parse the attribute's argument",
+                span: attr.span(),
     })};
 
-    if let syn::Expr::Path(expr_path) = *expr_assign.left {
-        if !expr_path.path.is_ident("debug") {
-            return Err(
-                CompileError {
-                    message: "The left part of the expression is not 'debug'",
-                    span: expr_path.path.span(),
-        })};
-    } else {
+    if !meta.path.is_ident("debug") {
         return Err(
-            CompileError{
-                message: "The left part of the expression is not a path",
-                span: expr_assign.left.span()
-    })};
+            CompileError {
+                message: "The left part of the attribute is not 'debug'",
+                span: meta.path.span(),
+    })}
 
-    if let syn::Expr::Lit(lit_expr) = *expr_assign.right {
-        if let syn::Lit::Str(lit_str) = lit_expr.lit {
-            Ok(lit_str)
+    if let syn::Expr::Lit(lit_expr) = &meta.value {
+        if let syn::Lit::Str(lit_str) = &lit_expr.lit {
+            Ok(lit_str.to_owned())
         } else {
             return Err(CompileError {
-                message: "The right part of the expression is not a string",
+                message: "The value of the attribute is not a string",
                 span: lit_expr.lit.span(),
         })}
     } else {
         return Err(
             CompileError {
-                message: "The right part of the expression is not a literal",
-                span: expr_assign.right.span(),
+                message: "The value of the expression is not a literal",
+                span: meta.value.span(),
     })}
 }
 
@@ -114,11 +99,19 @@ fn create_debug_field_impl(field: &syn::Field) -> proc_macro2::TokenStream {
 
     let ident_str = syn::LitStr::new(&ident.to_string(), field.span());
 
+    let a = field.attrs.iter().map(|attr| extract_format_string(attr));
+    for item in a {
+        if let Err(err) = item {
+            println!("{}", err.message);
+            return err.to_token();
+        }
+    }
+
     let format_str_option = field.attrs.iter().filter_map(|attr| extract_format_string(attr).ok()).last();
 
     if let Some(format_str) = format_str_option {
         quote! {
-            .field(#ident_str, format!(#format_str, &self.#ident))
+            .field(#ident_str, &format_args!(#format_str, &self.#ident))
         }
     } else {
         quote! {

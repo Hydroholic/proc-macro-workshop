@@ -14,7 +14,15 @@ impl fmt::Debug for Field {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Field")
             .field("name", &self.name)
-            .field("bitmask", &self.bitmask)
+            .field(
+                "bitmask",
+                &::alloc::__export::must_use({
+                    let res = ::alloc::fmt::format(
+                        format_args!("0b{0:08b}", &self.bitmask),
+                    );
+                    res
+                }),
+            )
             .finish()
     }
 }
