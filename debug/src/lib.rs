@@ -1,7 +1,7 @@
 use proc_macro::TokenStream;
 use syn::{self, spanned::Spanned};
 use quote::{quote, quote_spanned};
-
+use std::marker::PhantomData;
 
 struct CompileError<'a> {
     message: &'a str,
@@ -34,13 +34,14 @@ pub fn derive(input: TokenStream) -> TokenStream {
         return quote! { compile_error!("Expected named fields") }.into()
     };
 
+    let generics = add_trait_bounds(input.generics);
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
     let debug_fields = named_fields.iter().map(create_debug_field_impl);
 
     quote! {
-        use std::fmt;
-        
-        impl fmt::Debug for #name {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        impl #impl_generics std::fmt::Debug for #name #ty_generics #where_clause {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 f.debug_struct(#name_str)
                  #(#debug_fields)*
                  .finish()
@@ -49,6 +50,14 @@ pub fn derive(input: TokenStream) -> TokenStream {
     }.into()
 }
 
+fn add_trait_bounds(mut generics: syn::Generics) -> syn::Generics {
+    for param in &mut generics.params {
+        if let syn::GenericParam::Type(ref mut type_param) = *param {
+            type_param.bounds.push(syn::parse_quote!(std::fmt::Debug));
+        }
+    }
+    generics
+}
 
 fn extract_format_string(attr: &syn::Attribute) -> Result<syn::LitStr, CompileError> {
     let meta = if let syn::Meta::NameValue(m) = &attr.meta {
@@ -99,15 +108,11 @@ fn create_debug_field_impl(field: &syn::Field) -> proc_macro2::TokenStream {
 
     let ident_str = syn::LitStr::new(&ident.to_string(), field.span());
 
-    let a = field.attrs.iter().map(|attr| extract_format_string(attr));
-    for item in a {
-        if let Err(err) = item {
-            println!("{}", err.message);
-            return err.to_token();
-        }
-    }
-
-    let format_str_option = field.attrs.iter().filter_map(|attr| extract_format_string(attr).ok()).last();
+    let format_str_option = field
+        .attrs
+        .iter()
+        .filter_map(|attr| extract_format_string(attr).ok())
+        .last();
 
     if let Some(format_str) = format_str_option {
         quote! {
