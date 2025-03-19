@@ -1,7 +1,6 @@
 use proc_macro::TokenStream;
 use syn::{self, spanned::Spanned};
 use quote::{quote, quote_spanned};
-use std::marker::PhantomData;
 
 struct CompileError<'a> {
     message: &'a str,
@@ -34,7 +33,9 @@ pub fn derive(input: TokenStream) -> TokenStream {
         return quote! { compile_error!("Expected named fields") }.into()
     };
 
-    let generics = add_trait_bounds(input.generics);
+    let excluded_generics = named_fields.iter().filter_map(extract_phantom_data_generic).collect();
+
+    let generics = add_trait_bounds(input.generics, excluded_generics);
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
     let debug_fields = named_fields.iter().map(create_debug_field_impl);
@@ -50,10 +51,49 @@ pub fn derive(input: TokenStream) -> TokenStream {
     }.into()
 }
 
-fn add_trait_bounds(mut generics: syn::Generics) -> syn::Generics {
+fn extract_phantom_data_generic(f: &syn::Field) -> Option<&syn::TypePath> {
+    let path_type = if let syn::Type::Path(pt) = &f.ty {
+        pt
+    } else {
+        return None
+    };
+    
+    let type_ident = &path_type.path.segments.last().expect("Path should have a last segmenbt").ident;
+
+    if type_ident != "PhantomData" {
+        return None
+    };
+
+    let arguments = &path_type.path.segments.last().expect("PhantomData should have a last segment").arguments;
+
+    let generic_arg = if let syn::PathArguments::AngleBracketed(a) = arguments {
+        a.args.first().expect("PhantomData should have a first argument")
+    } else {
+        return None
+    };
+
+    let generic_type = if let syn::GenericArgument::Type(t) = generic_arg {
+        t
+    } else {
+        return None
+    };
+
+    if let syn::Type::Path(p) = generic_type {
+        Some(p)
+    } else {
+        return None
+    }
+}
+
+fn add_trait_bounds(mut generics: syn::Generics, exclude: Vec<&syn::TypePath>) -> syn::Generics {
     for param in &mut generics.params {
         if let syn::GenericParam::Type(ref mut type_param) = *param {
-            type_param.bounds.push(syn::parse_quote!(std::fmt::Debug));
+            if exclude
+                .iter()
+                .filter_map(|t| t.path.get_ident())
+                .all(|ident| ident.to_string() != type_param.ident.to_string()) {
+                    type_param.bounds.push(syn::parse_quote!(std::fmt::Debug));
+                }
         }
     }
     generics
