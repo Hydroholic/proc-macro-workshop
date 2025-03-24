@@ -40,6 +40,10 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
     let debug_fields = named_fields.iter().map(create_debug_field_impl);
 
+    fun_name(named_fields.clone());
+
+    Some(syn::WhereClause)
+
     quote! {
         impl #impl_generics std::fmt::Debug for #name #ty_generics #where_clause {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -49,6 +53,25 @@ pub fn derive(input: TokenStream) -> TokenStream {
             }
         }
     }.into()
+}
+
+fn fun_name(named_fields: Vec<syn::Field>) -> [syn::PathSegment; 2] {
+    for f in named_fields {
+        if let syn::Type::Path(tp) = f.ty {
+            let arg = &tp.path.segments.last().expect("00").arguments;
+            if let syn::PathArguments::AngleBracketed(a) = arg {
+                let first = a.args.first().expect("msg");
+                if let syn::GenericArgument::Type(t) = first {
+                    if let syn::Type::Path(tp2) = t {
+                        if tp2.path.segments.len() == 2 {
+                            return [tp2.path.segments[0].clone(), tp2.path.segments[1].clone()]
+                        }
+                    }
+                }
+            }
+        }
+    }
+    panic!("vas te fare")
 }
 
 fn extract_phantom_data_generic(f: &syn::Field) -> Option<&syn::TypePath> {

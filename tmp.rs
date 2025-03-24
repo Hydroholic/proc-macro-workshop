@@ -4,40 +4,23 @@ use std::prelude::rust_2021::*;
 #[macro_use]
 extern crate std;
 use derive_debug::CustomDebug;
-pub struct Field<T> {
-    value: T,
-    #[debug = "0b{:08b}"]
-    bitmask: u8,
+use std::fmt::Debug;
+pub trait Trait {
+    type Value;
 }
-impl<T: std::fmt::Debug> std::fmt::Debug for Field<T> {
+pub struct Field<T: Trait> {
+    values: Vec<T::Value>,
+}
+impl<T: Trait + std::fmt::Debug> std::fmt::Debug for Field<T::Value> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Field")
-            .field("value", &self.value)
-            .field("bitmask", &format_args!("0b{0:08b}", &self.bitmask))
-            .finish()
+        f.debug_struct("Field").field("values", &self.values).finish()
     }
 }
+fn assert_debug<F: Debug>() {}
 fn main() {
-    let f = Field {
-        value: "F",
-        bitmask: 0b00011100,
-    };
-    let debug = ::alloc::__export::must_use({
-        let res = ::alloc::fmt::format(format_args!("{0:?}", f));
-        res
-    });
-    let expected = r#"Field { value: "F", bitmask: 0b00011100 }"#;
-    match (&debug, &expected) {
-        (left_val, right_val) => {
-            if !(*left_val == *right_val) {
-                let kind = ::core::panicking::AssertKind::Eq;
-                ::core::panicking::assert_failed(
-                    kind,
-                    &*left_val,
-                    &*right_val,
-                    ::core::option::Option::None,
-                );
-            }
-        }
-    };
+    struct Id;
+    impl Trait for Id {
+        type Value = u8;
+    }
+    assert_debug::<Field<Id>>();
 }
