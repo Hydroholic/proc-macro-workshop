@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
+use quote::{quote, quote_spanned, ToTokens};
 use syn::{self, spanned::Spanned};
-use quote::{quote, quote_spanned};
 
 struct CompileError<'a> {
     message: &'a str,
@@ -14,7 +14,6 @@ impl<'a> CompileError<'a> {
     }
 }
 
-
 #[proc_macro_derive(CustomDebug, attributes(debug))]
 pub fn derive(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
@@ -23,26 +22,38 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
     let fields = if let syn::Data::Struct(data) = input.data {
         data.fields
-    } else { 
-        return quote! { compile_error!("Expected struct input") }.into()
+    } else {
+        return quote! { compile_error!("Expected struct input") }.into();
     };
 
     let named_fields: Vec<syn::Field> = if let syn::Fields::Named(f) = fields {
         f.named.into_iter().collect()
     } else {
-        return quote! { compile_error!("Expected named fields") }.into()
+        return quote! { compile_error!("Expected named fields") }.into();
     };
 
-    let excluded_generics = named_fields.iter().filter_map(extract_phantom_data_generic).collect();
+    let excluded_generics = named_fields
+        .iter()
+        .filter_map(extract_phantom_data_generic)
+        .collect();
 
     let generics = add_trait_bounds(input.generics, excluded_generics);
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
     let debug_fields = named_fields.iter().map(create_debug_field_impl);
 
-    fun_name(named_fields.clone());
-
-    Some(syn::WhereClause)
+    let inner_types = named_fields.iter().filter_map(get_inner_type);
+    println!("{}", inner_types.clone().collect::<Vec<_>>().len());
+    let where_clause = if let Some(wc) = where_clause {
+        Some(quote! {
+            wc,
+            #(#inner_types: std::fmt::Debug,)*
+        })
+    } else {
+        Some(quote! {
+            where #(#inner_types: std::fmt::Debug,)*
+        })
+    };
 
     quote! {
         impl #impl_generics std::fmt::Debug for #name #ty_generics #where_clause {
@@ -52,71 +63,102 @@ pub fn derive(input: TokenStream) -> TokenStream {
                  .finish()
             }
         }
-    }.into()
+    }
+    .into()
 }
 
-fn fun_name(named_fields: Vec<syn::Field>) -> [syn::PathSegment; 2] {
-    for f in named_fields {
-        if let syn::Type::Path(tp) = f.ty {
-            let arg = &tp.path.segments.last().expect("00").arguments;
-            if let syn::PathArguments::AngleBracketed(a) = arg {
-                let first = a.args.first().expect("msg");
-                if let syn::GenericArgument::Type(t) = first {
-                    if let syn::Type::Path(tp2) = t {
-                        if tp2.path.segments.len() == 2 {
-                            return [tp2.path.segments[0].clone(), tp2.path.segments[1].clone()]
-                        }
-                    }
-                }
-            }
+fn get_inner_type(field: &syn::Field) -> Option<&syn::Type> {
+    let type_path = if let syn::Type::Path(ref tp) = field.ty {
+        tp
+    } else {
+        return None;
+    };
+
+    let arg = &type_path.path.segments.last()?.arguments;
+
+    let args_in_brackets = if let syn::PathArguments::AngleBracketed(a) = arg {
+        a
+    } else {
+        return None;
+    };
+
+    let first = args_in_brackets.args.first()?;
+
+    let generic_type = if let syn::GenericArgument::Type(t) = first {
+        t
+    } else {
+        return None;
+    };
+
+    if let syn::Type::Path(generic_type_path) = generic_type {
+        let segments = &generic_type_path.path.segments;
+        if segments.len() == 2 {
+            Some(generic_type)
+        } else {
+            return None;
         }
+    } else {
+        None
     }
-    panic!("vas te fare")
 }
 
 fn extract_phantom_data_generic(f: &syn::Field) -> Option<&syn::TypePath> {
     let path_type = if let syn::Type::Path(pt) = &f.ty {
         pt
     } else {
-        return None
+        return None;
     };
-    
-    let type_ident = &path_type.path.segments.last().expect("Path should have a last segmenbt").ident;
+
+    let type_ident = &path_type
+        .path
+        .segments
+        .last()
+        .expect("Path should have a last segmenbt")
+        .ident;
 
     if type_ident != "PhantomData" {
-        return None
+        return None;
     };
 
-    let arguments = &path_type.path.segments.last().expect("PhantomData should have a last segment").arguments;
+    let arguments = &path_type
+        .path
+        .segments
+        .last()
+        .expect("PhantomData should have a last segment")
+        .arguments;
 
     let generic_arg = if let syn::PathArguments::AngleBracketed(a) = arguments {
-        a.args.first().expect("PhantomData should have a first argument")
+        a.args
+            .first()
+            .expect("PhantomData should have a first argument")
     } else {
-        return None
+        return None;
     };
 
     let generic_type = if let syn::GenericArgument::Type(t) = generic_arg {
         t
     } else {
-        return None
+        return None;
     };
 
     if let syn::Type::Path(p) = generic_type {
         Some(p)
     } else {
-        return None
+        return None;
     }
 }
 
+// FIXME: wrong implementation, train bounds belong in 'where' clause
 fn add_trait_bounds(mut generics: syn::Generics, exclude: Vec<&syn::TypePath>) -> syn::Generics {
     for param in &mut generics.params {
         if let syn::GenericParam::Type(ref mut type_param) = *param {
             if exclude
                 .iter()
                 .filter_map(|t| t.path.get_ident())
-                .all(|ident| ident.to_string() != type_param.ident.to_string()) {
-                    type_param.bounds.push(syn::parse_quote!(std::fmt::Debug));
-                }
+                .all(|ident| ident.to_string() != type_param.ident.to_string())
+            {
+                type_param.bounds.push(syn::parse_quote!(std::fmt::Debug));
+            }
         }
     }
     generics
@@ -126,18 +168,18 @@ fn extract_format_string(attr: &syn::Attribute) -> Result<syn::LitStr, CompileEr
     let meta = if let syn::Meta::NameValue(m) = &attr.meta {
         m
     } else {
-        return Err(
-            CompileError {
-                message: "Can't parse the attribute's argument",
-                span: attr.span(),
-    })};
+        return Err(CompileError {
+            message: "Can't parse the attribute's argument",
+            span: attr.span(),
+        });
+    };
 
     if !meta.path.is_ident("debug") {
-        return Err(
-            CompileError {
-                message: "The left part of the attribute is not 'debug'",
-                span: meta.path.span(),
-    })}
+        return Err(CompileError {
+            message: "The left part of the attribute is not 'debug'",
+            span: meta.path.span(),
+        });
+    }
 
     if let syn::Expr::Lit(lit_expr) = &meta.value {
         if let syn::Lit::Str(lit_str) = &lit_expr.lit {
@@ -146,24 +188,22 @@ fn extract_format_string(attr: &syn::Attribute) -> Result<syn::LitStr, CompileEr
             return Err(CompileError {
                 message: "The value of the attribute is not a string",
                 span: lit_expr.lit.span(),
-        })}
+            });
+        }
     } else {
-        return Err(
-            CompileError {
-                message: "The value of the expression is not a literal",
-                span: meta.value.span(),
-    })}
+        return Err(CompileError {
+            message: "The value of the expression is not a literal",
+            span: meta.value.span(),
+        });
+    }
 }
 
-
 fn create_debug_field_impl(field: &syn::Field) -> proc_macro2::TokenStream {
-    let ident_result = field.ident
-        .to_owned()
-        .ok_or(
-            CompileError { 
-                span: field.ident.span(),
-                message: "Field has no identifier"});
-    
+    let ident_result = field.ident.to_owned().ok_or(CompileError {
+        span: field.ident.span(),
+        message: "Field has no identifier",
+    });
+
     let ident = match ident_result {
         Ok(value) => value,
         Err(err) => return err.to_token(),
@@ -187,3 +227,4 @@ fn create_debug_field_impl(field: &syn::Field) -> proc_macro2::TokenStream {
         }
     }
 }
+
