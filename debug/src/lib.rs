@@ -37,26 +37,35 @@ pub fn derive(input: TokenStream) -> TokenStream {
         .filter_map(extract_phantom_data_generic)
         .collect();
 
-    let generics = add_trait_bounds(input.generics, excluded_generics);
-    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
     let debug_fields = named_fields.iter().map(create_debug_field_impl);
 
     let inner_types = named_fields.iter().filter_map(get_inner_type);
     println!("{}", inner_types.clone().collect::<Vec<_>>().len());
-    let where_clause = if let Some(wc) = where_clause {
-        Some(quote! {
-            wc,
-            #(#inner_types: std::fmt::Debug,)*
-        })
-    } else {
-        Some(quote! {
-            where #(#inner_types: std::fmt::Debug,)*
-        })
+
+    let generics = get_generic_types(&input.generics, excluded_generics);
+
+    let new_where_clause = quote! {
+        where
+            // FIXME: exclude when found as first segment of inner tags
+        // #(#generics: std::fmt::Debug,)*
+        #(#inner_types: std::fmt::Debug,)*
     };
 
+    // let where_clause = if let Some(wc) = where_clause {
+    //     Some(quote! {
+    //         wc,
+    //         #(#inner_types: std::fmt::Debug,)*
+    //     })
+    // } else {
+    //     Some(quote! {
+    //         where #(#inner_types: std::fmt::Debug,)*
+    //     })
+    // };
+
     quote! {
-        impl #impl_generics std::fmt::Debug for #name #ty_generics #where_clause {
+        impl #impl_generics std::fmt::Debug for #name #ty_generics #new_where_clause {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 f.debug_struct(#name_str)
                  #(#debug_fields)*
@@ -164,6 +173,27 @@ fn add_trait_bounds(mut generics: syn::Generics, exclude: Vec<&syn::TypePath>) -
     generics
 }
 
+fn get_generic_types(generics: &syn::Generics, exclude: Vec<&syn::TypePath>) -> Vec<syn::Ident> {
+    generics
+        .params
+        .iter()
+        .filter_map(|x| {
+            if let syn::GenericParam::Type(type_param) = x {
+                Some(&type_param.ident)
+            } else {
+                None
+            }
+        })
+        .filter(|&f| {
+            exclude
+                .iter()
+                .filter_map(|t| t.path.get_ident())
+                .all(|ident| ident.to_string() != f.to_string())
+        })
+        .map(|x| x.to_owned())
+        .collect()
+}
+
 fn extract_format_string(attr: &syn::Attribute) -> Result<syn::LitStr, CompileError> {
     let meta = if let syn::Meta::NameValue(m) = &attr.meta {
         m
@@ -227,4 +257,3 @@ fn create_debug_field_impl(field: &syn::Field) -> proc_macro2::TokenStream {
         }
     }
 }
-
