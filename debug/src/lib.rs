@@ -44,34 +44,27 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let inner_types = named_fields.iter().filter_map(get_inner_type);
     println!("{}", inner_types.clone().collect::<Vec<_>>().len());
 
+    // FIXME: generics, as inner types, should comme from the attributes.
+    // I can get the generic names from the struct and check if some attributes
+    // TypePath start with it.
     let generics = get_generic_types(&input.generics, excluded_generics);
 
-    let new_where_clause = quote! {
-        where
-            // FIXME: exclude when found as first segment of inner tags
-        // #(#generics: std::fmt::Debug,)*
-        #(#inner_types: std::fmt::Debug,)*
+    let new_where_clause = if generics.is_empty() {
+        None
+    } else {
+        Some(quote! { where
+        #(#generics: std::fmt::Debug,)*
+        #(#inner_types: std::fmt::Debug,)* })
     };
 
-    // let where_clause = if let Some(wc) = where_clause {
-    //     Some(quote! {
-    //         wc,
-    //         #(#inner_types: std::fmt::Debug,)*
-    //     })
-    // } else {
-    //     Some(quote! {
-    //         where #(#inner_types: std::fmt::Debug,)*
-    //     })
-    // };
-
     quote! {
-        impl #impl_generics std::fmt::Debug for #name #ty_generics #new_where_clause {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.debug_struct(#name_str)
-                 #(#debug_fields)*
-                 .finish()
-            }
+      impl #impl_generics std::fmt::Debug for #name #ty_generics #new_where_clause {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+          f.debug_struct(#name_str)
+          #(#debug_fields)*
+          .finish()
         }
+      }
     }
     .into()
 }
@@ -249,11 +242,11 @@ fn create_debug_field_impl(field: &syn::Field) -> proc_macro2::TokenStream {
 
     if let Some(format_str) = format_str_option {
         quote! {
-            .field(#ident_str, &format_args!(#format_str, &self.#ident))
+          .field(#ident_str, &format_args!(#format_str, &self.#ident))
         }
     } else {
         quote! {
-            .field(#ident_str, &self.#ident)
+          .field(#ident_str, &self.#ident)
         }
     }
 }
