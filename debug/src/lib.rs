@@ -1,5 +1,5 @@
 use proc_macro::TokenStream;
-use quote::{quote, quote_spanned, ToTokens};
+use quote::{quote, quote_spanned};
 use syn::{self, spanned::Spanned};
 
 struct CompileError<'a> {
@@ -37,20 +37,23 @@ pub fn derive(input: TokenStream) -> TokenStream {
         .filter_map(extract_phantom_data_generic)
         .collect();
 
-    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    let (impl_generics, ty_generics, _) = input.generics.split_for_impl();
 
     let debug_fields = named_fields.iter().map(create_debug_field_impl);
-
-    let inner_types = named_fields.iter().filter_map(get_inner_type);
-    println!("{}", inner_types.clone().collect::<Vec<_>>().len());
 
     // FIXME: generics, as inner types, should comme from the attributes.
     // I can get the generic names from the struct and check if some attributes
     // TypePath start with it.
     let generics = get_generic_idents(&input.generics, excluded_generics);
 
+    generics
+        .iter()
+        .map(|x| x.to_string())
+        .for_each(|x| println!("{x}"));
+
     let generics_from_attributes: Vec<syn::TypePath> = named_fields
         .iter()
+        .filter_map(|f| get_type_path(&f.ty))
         .filter_map(|f| get_generics_from_attribute(f, &generics))
         .collect();
 
@@ -58,7 +61,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
         None
     } else {
         Some(quote! { where
-        #(#generics_from_attributes,)*
+        #(#generics_from_attributes: std::fmt::Debug,)*
         // #(#generics: std::fmt::Debug,)*
         // #(#inner_types: std::fmt::Debug,)*
         })
@@ -76,13 +79,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
     .into()
 }
 
-fn get_inner_type(field: &syn::Field) -> Option<&syn::Type> {
-    let type_path = if let syn::Type::Path(ref tp) = field.ty {
-        tp
-    } else {
-        return None;
-    };
-
+fn get_inner_type(type_path: &syn::TypePath) -> Option<syn::TypePath> {
     let arg = &type_path.path.segments.last()?.arguments;
 
     let args_in_brackets = if let syn::PathArguments::AngleBracketed(a) = arg {
@@ -102,7 +99,7 @@ fn get_inner_type(field: &syn::Field) -> Option<&syn::Type> {
     if let syn::Type::Path(generic_type_path) = generic_type {
         let segments = &generic_type_path.path.segments;
         if segments.len() == 2 {
-            Some(generic_type)
+            Some(generic_type_path.to_owned())
         } else {
             return None;
         }
@@ -112,13 +109,13 @@ fn get_inner_type(field: &syn::Field) -> Option<&syn::Type> {
 }
 
 fn extract_phantom_data_generic(f: &syn::Field) -> Option<&syn::TypePath> {
-    let path_type = if let syn::Type::Path(pt) = &f.ty {
+    let type_path = if let syn::Type::Path(pt) = &f.ty {
         pt
     } else {
         return None;
     };
 
-    let type_ident = &path_type
+    let type_ident = &type_path
         .path
         .segments
         .last()
@@ -129,7 +126,7 @@ fn extract_phantom_data_generic(f: &syn::Field) -> Option<&syn::TypePath> {
         return None;
     };
 
-    let arguments = &path_type
+    let arguments = &type_path
         .path
         .segments
         .last()
@@ -155,22 +152,6 @@ fn extract_phantom_data_generic(f: &syn::Field) -> Option<&syn::TypePath> {
     } else {
         return None;
     }
-}
-
-// FIXME: wrong implementation, train bounds belong in 'where' clause
-fn add_trait_bounds(mut generics: syn::Generics, exclude: Vec<&syn::TypePath>) -> syn::Generics {
-    for param in &mut generics.params {
-        if let syn::GenericParam::Type(ref mut type_param) = *param {
-            if exclude
-                .iter()
-                .filter_map(|t| t.path.get_ident())
-                .all(|ident| ident.to_string() != type_param.ident.to_string())
-            {
-                type_param.bounds.push(syn::parse_quote!(std::fmt::Debug));
-            }
-        }
-    }
-    generics
 }
 
 fn get_generic_idents(generics: &syn::Generics, exclude: Vec<&syn::TypePath>) -> Vec<syn::Ident> {
@@ -259,29 +240,35 @@ fn create_debug_field_impl(field: &syn::Field) -> proc_macro2::TokenStream {
 }
 
 fn get_generics_from_attribute(
-    field: &syn::Field,
+    type_path: &syn::TypePath,
     generic_idents: &Vec<syn::Ident>,
 ) -> Option<syn::TypePath> {
-    let type_path = if let syn::Type::Path(ref p) = field.ty {
-        p
-    } else {
-        return None;
-    };
-
     let a: String = type_path
         .path
         .segments
         .iter()
-        .fold(String::new(), |acc, x| acc + "::" + &x.ident.to_string());
+        .map(|x| x.ident.to_string())
+        .reduce(|acc, s| format!("{acc}::{s}"))?;
 
     let a_str = a.to_string();
+
+    println!("type: {}", a_str);
 
     if generic_idents
         .iter()
         .map(|x| x.to_string())
-        .any(|x| a_str.starts_with(&x))
+        .any(|x| a_str == x || a_str.starts_with(&format!("{x}::")))
     {
-        Some(type_path.to_owned())
+        return Some(type_path.to_owned());
+    }
+
+    let inner_type = get_inner_type(type_path)?;
+    get_generics_from_attribute(&inner_type, generic_idents)
+}
+
+fn get_type_path(t: &syn::Type) -> Option<&syn::TypePath> {
+    if let syn::Type::Path(p) = t {
+        Some(p)
     } else {
         None
     }
