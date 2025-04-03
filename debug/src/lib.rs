@@ -47,14 +47,21 @@ pub fn derive(input: TokenStream) -> TokenStream {
     // FIXME: generics, as inner types, should comme from the attributes.
     // I can get the generic names from the struct and check if some attributes
     // TypePath start with it.
-    let generics = get_generic_types(&input.generics, excluded_generics);
+    let generics = get_generic_idents(&input.generics, excluded_generics);
 
-    let new_where_clause = if generics.is_empty() {
+    let generics_from_attributes: Vec<syn::TypePath> = named_fields
+        .iter()
+        .filter_map(|f| get_generics_from_attribute(f, &generics))
+        .collect();
+
+    let new_where_clause = if generics_from_attributes.is_empty() {
         None
     } else {
         Some(quote! { where
-        #(#generics: std::fmt::Debug,)*
-        #(#inner_types: std::fmt::Debug,)* })
+        #(#generics_from_attributes,)*
+        // #(#generics: std::fmt::Debug,)*
+        // #(#inner_types: std::fmt::Debug,)*
+        })
     };
 
     quote! {
@@ -166,7 +173,7 @@ fn add_trait_bounds(mut generics: syn::Generics, exclude: Vec<&syn::TypePath>) -
     generics
 }
 
-fn get_generic_types(generics: &syn::Generics, exclude: Vec<&syn::TypePath>) -> Vec<syn::Ident> {
+fn get_generic_idents(generics: &syn::Generics, exclude: Vec<&syn::TypePath>) -> Vec<syn::Ident> {
     generics
         .params
         .iter()
@@ -248,5 +255,34 @@ fn create_debug_field_impl(field: &syn::Field) -> proc_macro2::TokenStream {
         quote! {
           .field(#ident_str, &self.#ident)
         }
+    }
+}
+
+fn get_generics_from_attribute(
+    field: &syn::Field,
+    generic_idents: &Vec<syn::Ident>,
+) -> Option<syn::TypePath> {
+    let type_path = if let syn::Type::Path(ref p) = field.ty {
+        p
+    } else {
+        return None;
+    };
+
+    let a: String = type_path
+        .path
+        .segments
+        .iter()
+        .fold(String::new(), |acc, x| acc + "::" + &x.ident.to_string());
+
+    let a_str = a.to_string();
+
+    if generic_idents
+        .iter()
+        .map(|x| x.to_string())
+        .any(|x| a_str.starts_with(&x))
+    {
+        Some(type_path.to_owned())
+    } else {
+        None
     }
 }
