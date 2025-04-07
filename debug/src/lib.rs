@@ -46,11 +46,6 @@ pub fn derive(input: TokenStream) -> TokenStream {
     // TypePath start with it.
     let generics = get_generic_idents(&input.generics, excluded_generics);
 
-    generics
-        .iter()
-        .map(|x| x.to_string())
-        .for_each(|x| println!("{x}"));
-
     let generics_from_attributes: Vec<syn::TypePath> = named_fields
         .iter()
         .filter_map(|f| get_type_path(&f.ty))
@@ -97,12 +92,7 @@ fn get_inner_type(type_path: &syn::TypePath) -> Option<syn::TypePath> {
     };
 
     if let syn::Type::Path(generic_type_path) = generic_type {
-        let segments = &generic_type_path.path.segments;
-        if segments.len() == 2 {
-            Some(generic_type_path.to_owned())
-        } else {
-            return None;
-        }
+        Some(generic_type_path.to_owned())
     } else {
         None
     }
@@ -252,8 +242,6 @@ fn get_generics_from_attribute(
 
     let a_str = a.to_string();
 
-    println!("type: {}", a_str);
-
     if generic_idents
         .iter()
         .map(|x| x.to_string())
@@ -263,6 +251,7 @@ fn get_generics_from_attribute(
     }
 
     let inner_type = get_inner_type(type_path)?;
+
     get_generics_from_attribute(&inner_type, generic_idents)
 }
 
