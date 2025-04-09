@@ -41,9 +41,27 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
     let debug_fields = named_fields.iter().map(create_debug_field_impl);
 
-    // FIXME: generics, as inner types, should comme from the attributes.
-    // I can get the generic names from the struct and check if some attributes
-    // TypePath start with it.
+    let x: Result<Vec<proc_macro2::TokenStream>, CompileError> = input
+        .attrs
+        .iter()
+        .filter(|&x| x.path().is_ident("debug"))
+        .map(get_bound_literal)
+        .map(|x| {
+            x.and_then(|y| {
+                let s: syn::WherePredicate = syn::parse_str(&y.value()).or(Err(CompileError {
+                    message: "Could not parse WherePredicate",
+                    span: y.span(),
+                }))?;
+                Ok(quote_spanned! { y.span() => where #s})
+            })
+        })
+        .collect();
+
+    let bound_from_attr = match x {
+        Ok(v) => v.last().map(|x| x.to_owned()),
+        Err(e) => return e.to_token().into(),
+    };
+
     let generics = get_generic_idents(&input.generics, excluded_generics);
 
     let generics_from_attributes: Vec<syn::TypePath> = named_fields
@@ -52,13 +70,13 @@ pub fn derive(input: TokenStream) -> TokenStream {
         .filter_map(|f| get_generics_from_attribute(f, &generics))
         .collect();
 
-    let new_where_clause = if generics_from_attributes.is_empty() {
+    let new_where_clause = if bound_from_attr.is_some() {
+        bound_from_attr
+    } else if generics_from_attributes.is_empty() {
         None
     } else {
         Some(quote! { where
         #(#generics_from_attributes: std::fmt::Debug,)*
-        // #(#generics: std::fmt::Debug,)*
-        // #(#inner_types: std::fmt::Debug,)*
         })
     };
 
@@ -260,5 +278,55 @@ fn get_type_path(t: &syn::Type) -> Option<&syn::TypePath> {
         Some(p)
     } else {
         None
+    }
+}
+
+fn parse_args(attr: &syn::Attribute) -> Result<syn::Expr, syn::Error> {
+    attr.parse_args()
+}
+
+fn get_bound_literal(attr: &syn::Attribute) -> Result<syn::LitStr, CompileError> {
+    let expr = parse_args(attr).or(Err(CompileError {
+        message: "Can't parse the attribute's argument",
+        span: attr.span(),
+    }))?;
+
+    let expr_assign = if let syn::Expr::Assign(e) = expr {
+        e
+    } else {
+        return Err(CompileError {
+            message: "The expression is not be an assignment",
+            span: expr.span(),
+        });
+    };
+
+    if let syn::Expr::Path(expr_path) = *expr_assign.left {
+        if !expr_path.path.is_ident("bound") {
+            return Err(CompileError {
+                message: "The left part of the expression is not 'bound'",
+                span: expr_path.path.span(),
+            });
+        };
+    } else {
+        return Err(CompileError {
+            message: "The left part of the expression is not a path",
+            span: expr_assign.left.span(),
+        });
+    };
+
+    if let syn::Expr::Lit(lit_expr) = *expr_assign.right {
+        if let syn::Lit::Str(lit_str) = lit_expr.lit {
+            Ok(lit_str)
+        } else {
+            return Err(CompileError {
+                message: "The right part of the expression is not a string",
+                span: lit_expr.lit.span(),
+            });
+        }
+    } else {
+        return Err(CompileError {
+            message: "The right part of the expression is not a literal",
+            span: expr_assign.right.span(),
+        });
     }
 }
